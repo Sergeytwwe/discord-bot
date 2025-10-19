@@ -47,6 +47,61 @@ function generateUniqueKey() {
   return key;
 }
 
+// Функция парсинга длительности
+function parseDuration(durationStr) {
+  if (!durationStr) return null;
+  
+  const regex = /^(\d+)([dhm])$/i;
+  const match = durationStr.match(regex);
+  
+  if (!match) return null;
+  
+  const amount = parseInt(match[1]);
+  const unit = match[2].toLowerCase();
+  
+  switch (unit) {
+    case 'd': // дни
+      return { 
+        interval: `${amount} days`, 
+        milliseconds: amount * 24 * 60 * 60 * 1000,
+        human: `${amount} ${getRussianDays(amount)}`
+      };
+    case 'h': // часы
+      return { 
+        interval: `${amount} hours`, 
+        milliseconds: amount * 60 * 60 * 1000,
+        human: `${amount} ${getRussianHours(amount)}`
+      };
+    case 'm': // минуты
+      return { 
+        interval: `${amount} minutes`, 
+        milliseconds: amount * 60 * 1000,
+        human: `${amount} ${getRussianMinutes(amount)}`
+      };
+    default:
+      return null;
+  }
+}
+
+// Вспомогательные функции для русских склонений
+function getRussianDays(number) {
+  if (number % 10 === 1 && number % 100 !== 11) return 'день';
+  if ([2, 3, 4].includes(number % 10) && !(number % 100 >= 12 && number % 100 <= 14)) return 'дня';
+  return 'дней';
+}
+
+function getRussianHours(number) {
+  if (number % 10 === 1 && number % 100 !== 11) return 'час';
+  if ([2, 3, 4].includes(number % 10) && !(number % 100 >= 12 && number % 100 <= 14)) return 'часа';
+  return 'часов';
+}
+
+function getRussianMinutes(number) {
+  if (number % 10 === 1 && number % 100 !== 11) return 'минута';
+  if ([2, 3, 4].includes(number % 10) && !(number % 100 >= 12 && number % 100 <= 14)) return 'минуты';
+  return 'минут';
+}
+
 // Функции для работы с Supabase
 async function getLevel(userId) {
   try {
@@ -128,12 +183,24 @@ async function clearUserWarns(userId) {
 }
 
 // Функции для работы с ключами
-async function generateAndSaveKey(userId) {
+async function generateAndSaveKey(userId, durationStr = null) {
   try {
     let key;
     let isUnique = false;
     let attempts = 0;
     const maxAttempts = 10;
+
+    // Парсим длительность
+    let durationInfo = null;
+    let expiresAt = null;
+    
+    if (durationStr) {
+      durationInfo = parseDuration(durationStr);
+      if (!durationInfo) {
+        throw new Error('Неверный формат длительности. Используйте: 1d, 2h, 30m');
+      }
+      expiresAt = new Date(Date.now() + durationInfo.milliseconds).toISOString();
+    }
 
     // Генерируем ключ пока не найдем уникальный
     while (!isUnique && attempts < maxAttempts) {
@@ -170,7 +237,9 @@ async function generateAndSaveKey(userId) {
         key: key,
         created_by: userId,
         created_at: new Date().toISOString(),
-        is_used: false
+        is_used: false,
+        duration: durationInfo ? durationInfo.interval : null,
+        expires_at: expiresAt
       });
 
     if (insertError) {
@@ -178,7 +247,7 @@ async function generateAndSaveKey(userId) {
       throw new Error('Failed to save key to database');
     }
 
-    return key;
+    return { key, durationInfo };
   } catch (error) {
     console.error('Error in generateAndSaveKey:', error);
     throw error;
@@ -189,7 +258,7 @@ async function getGeneratedKeys(userId) {
   try {
     const { data, error } = await supabase
       .from('activation_keys')
-      .select('key, created_at, is_used')
+      .select('key, created_at, is_used, duration, expires_at')
       .eq('created_by', userId)
       .order('created_at', { ascending: false })
       .limit(10);
@@ -320,11 +389,22 @@ client.on(Events.MessageCreate, async (message) => {
     }
 
     try {
-      const key = await generateAndSaveKey(message.author.id);
+      const durationStr = args[0] || null;
+      const { key, durationInfo } = await generateAndSaveKey(message.author.id, durationStr);
+      
+      // Формируем сообщение о ключе
+      let keyMessage = `сгенерирован ключ: ${key}`;
+      if (durationInfo) {
+        keyMessage += `\nсрок действия: ${durationInfo.human}`;
+        const expiresDate = new Date(Date.now() + durationInfo.milliseconds);
+        keyMessage += `\nистекает: ${expiresDate.toLocaleString('ru-RU')}`;
+      } else {
+        keyMessage += `\nсрок действия: бессрочный`;
+      }
       
       // Отправляем ключ только в ЛС
       try {
-        await message.author.send(`сгенерирован ключ: ${key}`);
+        await message.author.send(keyMessage);
         await message.reply('ключ сгенерирован и отправлен в лс');
       } catch (dmError) {
         console.error('Cannot send DM:', dmError);
@@ -333,7 +413,7 @@ client.on(Events.MessageCreate, async (message) => {
     } catch (error) {
       console.error('Key generation error:', error);
       try {
-        await message.author.send('ошибка при генерации ключа');
+        await message.author.send(`ошибка при генерации ключа: ${error.message}`);
       } catch {
         // Игнорируем ошибку отправки в лс
       }
@@ -341,6 +421,7 @@ client.on(Events.MessageCreate, async (message) => {
     return;
   }
 
+  // Остальной код команд остается без изменений...
   if (cmd === '!ping' || cmd === '!пинг') {
     return message.reply('понг! бот работает');
   }
@@ -514,7 +595,8 @@ client.on(Events.MessageCreate, async (message) => {
 !повысить @user
 !понизить @user
 !уровень — показать уровень
-/generatekey — сгенерировать ключ (только для админов)
+/generatekey [время] — сгенерировать ключ (только для админов)
+    примеры времени: 1d, 2h, 30m
     `;
     return message.reply(text);
   }
