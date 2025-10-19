@@ -1,7 +1,6 @@
 require('dotenv').config();
 const { Client, GatewayIntentBits, Events } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
-const crypto = require('crypto');
 
 console.log('starting bot with supabase database...');
 
@@ -29,6 +28,24 @@ const allowedChannels = [
 
 const officialReplyRu = 'я могу отвечать только в официальных каналах сервера.';
 const officialReplyEn = 'i can only respond in the official server channels.';
+
+// Функция генерации уникального ключа
+function generateUniqueKey() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  const segments = [5, 6, 5]; // Длины сегментов
+  let key = 'VERYUP-';
+  
+  for (let i = 0; i < segments.length; i++) {
+    for (let j = 0; j < segments[i]; j++) {
+      key += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    if (i < segments.length - 1) {
+      key += '-';
+    }
+  }
+  
+  return key;
+}
 
 // Функции для работы с Supabase
 async function getLevel(userId) {
@@ -111,107 +128,80 @@ async function clearUserWarns(userId) {
 }
 
 // Функции для работы с ключами
-async function generateUniqueKey() {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  
-  while (true) {
-    // Генерируем случайные части ключа
-    const part1 = Array.from({length: 6}, () => 
-      chars.charAt(Math.floor(Math.random() * chars.length))).join('');
-    const part2 = Array.from({length: 6}, () => 
-      chars.charAt(Math.floor(Math.random() * chars.length))).join('');
-    const part3 = Array.from({length: 6}, () => 
-      chars.charAt(Math.floor(Math.random() * chars.length))).join('');
-    
-    const key = `VERYUP-${part1}-${part2}-${part3}`;
-    
-    // Проверяем уникальность ключа
-    const { data, error } = await supabase
-      .from('generated_keys')
-      .select('key')
-      .eq('key', key)
-      .single();
-    
-    if (error && error.code === 'PGRST116') {
-      // Ключ не найден (уникален)
-      return key;
-    } else if (error) {
-      console.error('Error checking key uniqueness:', error);
-      // В случае ошибки продолжаем попытки
-      continue;
-    }
-    
-    // Если ключ уже существует, продолжаем генерировать
-  }
-}
-
-async function saveGeneratedKey(key, generatedBy, uses = 1) {
+async function generateAndSaveKey(userId) {
   try {
-    const { error } = await supabase
-      .from('generated_keys')
-      .insert({ 
+    let key;
+    let isUnique = false;
+    let attempts = 0;
+    const maxAttempts = 10;
+
+    // Генерируем ключ пока не найдем уникальный
+    while (!isUnique && attempts < maxAttempts) {
+      key = generateUniqueKey();
+      
+      // Проверяем существует ли такой ключ
+      const { data: existingKey, error: checkError } = await supabase
+        .from('activation_keys')
+        .select('key')
+        .eq('key', key)
+        .single();
+
+      if (checkError && checkError.code === 'PGRST116') {
+        // Ключ не найден - уникальный
+        isUnique = true;
+      } else if (!checkError && existingKey) {
+        // Ключ уже существует, пробуем снова
+        attempts++;
+      } else {
+        // Другая ошибка
+        console.error('Error checking key uniqueness:', checkError);
+        attempts++;
+      }
+    }
+
+    if (!isUnique) {
+      throw new Error('Could not generate unique key after multiple attempts');
+    }
+
+    // Сохраняем ключ в базу
+    const { error: insertError } = await supabase
+      .from('activation_keys')
+      .insert({
         key: key,
-        generated_by: generatedBy,
-        uses_remaining: uses,
-        created_at: new Date().toISOString()
+        created_by: userId,
+        created_at: new Date().toISOString(),
+        is_used: false
       });
-    
-    if (error) {
-      console.error('Error saving key:', error);
-      return false;
+
+    if (insertError) {
+      console.error('Error saving key:', insertError);
+      throw new Error('Failed to save key to database');
     }
-    return true;
+
+    return key;
   } catch (error) {
-    console.error('Error saving key:', error);
-    return false;
+    console.error('Error in generateAndSaveKey:', error);
+    throw error;
   }
 }
 
-async function getKeyInfo(key) {
+async function getGeneratedKeys(userId) {
   try {
     const { data, error } = await supabase
-      .from('generated_keys')
-      .select('*')
-      .eq('key', key)
-      .single();
-    
-    if (error) return null;
-    return data;
-  } catch (error) {
-    console.error('Error getting key info:', error);
-    return null;
-  }
-}
+      .from('activation_keys')
+      .select('key, created_at, is_used')
+      .eq('created_by', userId)
+      .order('created_at', { ascending: false })
+      .limit(10);
 
-async function useKey(key, usedBy) {
-  try {
-    // Получаем информацию о ключе
-    const keyInfo = await getKeyInfo(key);
-    if (!keyInfo) return { success: false, message: 'Ключ не найден' };
-    
-    if (keyInfo.uses_remaining <= 0) {
-      return { success: false, message: 'Ключ уже использован' };
-    }
-    
-    // Обновляем количество использований
-    const { error } = await supabase
-      .from('generated_keys')
-      .update({ 
-        uses_remaining: keyInfo.uses_remaining - 1,
-        used_by: usedBy,
-        used_at: new Date().toISOString()
-      })
-      .eq('key', key);
-    
     if (error) {
-      console.error('Error using key:', error);
-      return { success: false, message: 'Ошибка при использовании ключа' };
+      console.error('Error getting keys:', error);
+      return [];
     }
-    
-    return { success: true, message: 'Ключ успешно использован' };
+    return data || [];
   } catch (error) {
-    console.error('Error using key:', error);
-    return { success: false, message: 'Ошибка при использовании ключа' };
+    console.error('Error getting keys:', error);
+    return [];
   }
 }
 
@@ -277,12 +267,12 @@ client.on(Events.MessageCreate, async (message) => {
 
   if (!allowedChannels.includes(message.channel.id)) return;
 
-  const content = message.content.trim();
-  const parts = content.split(/\s+/);
+  const parts = message.content.trim().split(/\s+/);
   if (parts.length === 0) return;
   const cmd = parts[0].toLowerCase();
   const args = parts.slice(1);
 
+  const content = message.content.trim();
   const isRussian = /[а-яё]/i.test(content);
   const level = await getLevel(message.author.id);
 
@@ -320,29 +310,33 @@ client.on(Events.MessageCreate, async (message) => {
 
   // Команда генерации ключа
   if (cmd === '/generatekey') {
-    if (!canUse(3)) return message.reply(t.noPerm);
-    
+    if (!canUse(3)) {
+      try {
+        await message.author.send('у вас нет прав для генерации ключей');
+        return;
+      } catch {
+        return; // Просто игнорируем если не можем отправить в лс
+      }
+    }
+
     try {
-      // Генерируем уникальный ключ
-      const key = await generateUniqueKey();
+      const key = await generateAndSaveKey(message.author.id);
       
-      // Сохраняем ключ в базу
-      const saved = await saveGeneratedKey(key, message.author.id);
-      
-      if (saved) {
-        // Отправляем ключ в ЛС автору команды
-        try {
-          await message.author.send(`✅ Сгенерирован новый ключ:\n\`${key}\`\n\nКлюч сохранен в базе данных.`);
-          await message.reply('✅ Ключ сгенерирован и отправлен вам в личные сообщения.');
-        } catch (dmError) {
-          await message.reply('❌ Не удалось отправить ключ в ЛС. Проверьте настройки приватности.');
-        }
-      } else {
-        await message.reply('❌ Ошибка при сохранении ключа в базу данных.');
+      // Отправляем ключ только в ЛС
+      try {
+        await message.author.send(`сгенерирован ключ: ${key}`);
+        await message.reply('ключ сгенерирован и отправлен в лс');
+      } catch (dmError) {
+        console.error('Cannot send DM:', dmError);
+        await message.reply('не удалось отправить ключ в лс. проверьте настройки приватности');
       }
     } catch (error) {
-      console.error('Error generating key:', error);
-      await message.reply('❌ Произошла ошибка при генерации ключа.');
+      console.error('Key generation error:', error);
+      try {
+        await message.author.send('ошибка при генерации ключа');
+      } catch {
+        // Игнорируем ошибку отправки в лс
+      }
     }
     return;
   }
