@@ -427,4 +427,10 @@ client.on(Events.MessageCreate, async (message) => {
 client.on('error', (err) => console.error('discord client error:', err));
 process.on('unhandledRejection', (err) => console.error('unhandled error:', err));
 
+// Запускаем бота
 client.login(process.env.DISCORD_TOKEN).catch(err => console.error('auth error:', err.message));
+
+// Экспортируем функцию для Vercel
+module.exports = (req, res) => {
+  res.status(200).send('Discord Bot is running!');
+};
