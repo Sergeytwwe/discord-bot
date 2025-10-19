@@ -1,7 +1,14 @@
 require('dotenv').config();
 const { Client, GatewayIntentBits, Events } = require('discord.js');
+const { createClient } = require('@supabase/supabase-js');
 
-console.log('starting bot with moderation commands...');
+console.log('starting bot with supabase database...');
+
+// Supabase клиент
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
 
 const client = new Client({
   intents: [
@@ -22,15 +29,84 @@ const allowedChannels = [
 const officialReplyRu = 'я могу отвечать только в официальных каналах сервера.';
 const officialReplyEn = 'i can only respond in the official server channels.';
 
-const userLevels = new Map();
-const userWarns = new Map();
-
-function getLevel(userId) {
-  return userLevels.get(userId) || 0;
+// Функции для работы с Supabase
+async function getLevel(userId) {
+  try {
+    const { data, error } = await supabase
+      .from('user_levels')
+      .select('level')
+      .eq('user_id', userId)
+      .single();
+    
+    if (error || !data) return 0;
+    return data.level;
+  } catch (error) {
+    console.error('Error getting level:', error);
+    return 0;
+  }
 }
 
-function setLevel(userId, level) {
-  userLevels.set(userId, level);
+async function setLevel(userId, level) {
+  try {
+    const { error } = await supabase
+      .from('user_levels')
+      .upsert({ 
+        user_id: userId, 
+        level: level,
+        updated_at: new Date().toISOString()
+      });
+    
+    if (error) console.error('Error setting level:', error);
+  } catch (error) {
+    console.error('Error setting level:', error);
+  }
+}
+
+async function addWarn(userId, reason) {
+  try {
+    const { error } = await supabase
+      .from('user_warns')
+      .insert({ 
+        user_id: userId, 
+        reason: reason 
+      });
+    
+    if (error) console.error('Error adding warn:', error);
+  } catch (error) {
+    console.error('Error adding warn:', error);
+  }
+}
+
+async function getUserWarns(userId) {
+  try {
+    const { data, error } = await supabase
+      .from('user_warns')
+      .select('*')
+      .eq('user_id', userId)
+      .gte('created_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString());
+    
+    if (error) {
+      console.error('Error getting warns:', error);
+      return [];
+    }
+    return data || [];
+  } catch (error) {
+    console.error('Error getting warns:', error);
+    return [];
+  }
+}
+
+async function clearUserWarns(userId) {
+  try {
+    const { error } = await supabase
+      .from('user_warns')
+      .delete()
+      .eq('user_id', userId);
+    
+    if (error) console.error('Error clearing warns:', error);
+  } catch (error) {
+    console.error('Error clearing warns:', error);
+  }
 }
 
 function parseDurationFromTokens(tokens, startIndex = 0) {
@@ -74,12 +150,14 @@ function formatHumanDuration(value, unit) {
 
 client.once(Events.ClientReady, async (c) => {
   console.log(`bot started: ${c.user.tag}`);
+  console.log('using supabase for data storage');
   console.log('commands: !ping, !ban, !kick, !mute, !unmute, !unban, !warn, !warns, !help, !повысить, !понизить');
 
+  // Автоматически даем уровень 3 владельцам серверов
   const guilds = client.guilds.cache;
   for (const [guildId, guild] of guilds) {
     const owner = await guild.fetchOwner();
-    setLevel(owner.id, 3);
+    await setLevel(owner.id, 3);
   }
 });
 
@@ -100,8 +178,7 @@ client.on(Events.MessageCreate, async (message) => {
 
   const content = message.content.trim();
   const isRussian = /[а-яё]/i.test(content);
-  const lang = isRussian ? 'ru' : 'en';
-  const level = getLevel(message.author.id);
+  const level = await getLevel(message.author.id);
 
   const t = {
     noPerm: 'у вас нет прав для этой команды',
@@ -133,7 +210,7 @@ client.on(Events.MessageCreate, async (message) => {
     return level >= levelRequired || isServerOwner();
   }
 
-  const isAdminProtected = (member) => getLevel(member.id) === 3;
+  const isAdminProtected = async (member) => await getLevel(member.id) === 3;
 
   if (cmd === '!ping' || cmd === '!пинг') {
     return message.reply('понг! бот работает');
@@ -156,120 +233,106 @@ client.on(Events.MessageCreate, async (message) => {
     const mentionedUser = message.mentions.members.first() || (args[0] ? message.guild.members.cache.get(args[0]) : null);
     if (!mentionedUser) return message.reply(t.noMemberOnServer(args[0] || ''));
     const reason = args.slice(1).join(' ') || 'без причины';
-    if (!mentionedUser.bannable || isAdminProtected(mentionedUser))
+    if (!mentionedUser.bannable || await isAdminProtected(mentionedUser))
       return message.reply('невозможно забанить этого пользователя');
     await mentionedUser.ban({ reason });
     return message.reply(t.banned(mentionedUser.user.tag, reason));
   }
 
-  // ✅ kick с причиной
   if (cmd === '!kick' || cmd === '!кик') {
     if (!canUse(1)) return message.reply(t.noPerm);
     const mentionedUser =
       message.mentions.members.first() ||
       (args[0] ? message.guild.members.cache.get(args[0].replace(/[<@!>]/g, '')) : null);
     if (!mentionedUser) return message.reply(t.noMemberOnServer(args[0] || ''));
-    if (!mentionedUser.kickable || isAdminProtected(mentionedUser))
+    if (!mentionedUser.kickable || await isAdminProtected(mentionedUser))
       return message.reply('невозможно кикнуть этого пользователя');
     const reason = args.slice(1).join(' ') || 'без причины';
     await mentionedUser.kick(reason);
     return message.reply(t.kicked(`${mentionedUser.user.tag} (причина: ${reason})`));
   }
 
-// =================== !mute / !мут ===================
-if (cmd === '!mute' || cmd === '!мут') {
-  if (!canUse(1)) return message.reply(t.noPerm);
+  if (cmd === '!mute' || cmd === '!мут') {
+    if (!canUse(1)) return message.reply(t.noPerm);
 
-  const mentionedUser =
-    message.mentions.members.first() ||
-    (args[0] ? message.guild.members.cache.get(args[0].replace(/[<@!>]/g, '')) : null);
+    const mentionedUser =
+      message.mentions.members.first() ||
+      (args[0] ? message.guild.members.cache.get(args[0].replace(/[<@!>]/g, '')) : null);
 
-  if (!mentionedUser) return message.reply(t.noMemberOnServer(args[0] || ''));
+    if (!mentionedUser) return message.reply(t.noMemberOnServer(args[0] || ''));
 
-  // --- отделяем аргументы после упоминания ---
-  const restArgs = args.slice(1);
+    const restArgs = args.slice(1);
+    let durationParsed = parseDurationFromTokens(restArgs, 0);
+    let duration = durationParsed?.ms;
 
-  // --- корректная обработка времени ---
-  let durationParsed = parseDurationFromTokens(restArgs, 0);
-  let duration = durationParsed?.ms;
+    if (!duration || !Number.isFinite(duration) || duration <= 0) {
+      duration = 60 * 60 * 1000;
+    }
 
-  // если парсер ничего не нашёл или вернул ерунду — ставим 1 час
-  if (!duration || !Number.isFinite(duration) || duration <= 0) {
-    duration = 60 * 60 * 1000; // 1 час
+    if (duration > 2419200000) duration = 2419200000;
+
+    const humanDuration =
+      durationParsed?.human && Number.isFinite(durationParsed.ms)
+        ? durationParsed.human
+        : formatHumanDuration(1, 'hours');
+
+    const restString = restArgs.join(' ');
+    const reasonString = restString.replace(
+      /\b\d+(?:[\.,]?\d*)?\s*(?:с|сек|секунд|секунда|секунды|s|sec|seconds?|м|мин|минут|minutes?|h|час|ч|часа|часов|d|дн|день|дня|дней)(?:\s*\d+\s*(?:с|сек|секунд|секунда|секунды|s|sec|seconds?|м|мин|минут|minutes?|h|час|ч|часа|часов|d|дн|день|дня|дней))*/gi,
+      ''
+    ).trim();
+
+    const reason = reasonString || 'без причины';
+
+    if (!mentionedUser.moderatable || await isAdminProtected(mentionedUser))
+      return message.reply('невозможно замутить этого пользователя');
+
+    try {
+      await mentionedUser.timeout(duration, reason);
+      return message.reply(t.muted(mentionedUser.user.tag, humanDuration, reason));
+    } catch (err) {
+      console.error('mute error:', err);
+      return message.reply('ошибка при выдаче мута. убедитесь, что у бота есть права и корректное время.');
+    }
   }
 
-  // Discord API не принимает >28 дней
-  if (duration > 2419200000) duration = 2419200000;
+  if (cmd === '!unmute' || cmd === '!снятьмут') {
+    if (!canUse(1)) return message.reply(t.noPerm);
 
-  // если парсер ничего не вернул — делаем красивую строку вручную
-  const humanDuration =
-    durationParsed?.human && Number.isFinite(durationParsed.ms)
-      ? durationParsed.human
-      : formatHumanDuration(1, 'hours');
+    const mentionedUser =
+      message.mentions.members.first() ||
+      (args[0] ? message.guild.members.cache.get(args[0].replace(/[<@!>]/g, '')) : null);
 
-  // --- извлечение причины ---
-  // объединяем все аргументы в строку
-  const restString = restArgs.join(' ');
+    if (!mentionedUser) return message.reply(t.noMemberOnServer(args[0] || ''));
 
-  // удаляем из строки все временные выражения (русские и английские)
-  const reasonString = restString.replace(
-    /\b\d+(?:[\.,]?\d*)?\s*(?:с|сек|секунд|секунда|секунды|s|sec|seconds?|м|мин|минут|minutes?|h|час|ч|часа|часов|d|дн|день|дня|дней)(?:\s*\d+\s*(?:с|сек|секунд|секунда|секунды|s|sec|seconds?|м|мин|минут|minutes?|h|час|ч|часа|часов|d|дн|день|дня|дней))*/gi,
-    ''
-  ).trim();
+    if (!mentionedUser.isCommunicationDisabled()) {
+      return message.reply(`пользователь ${mentionedUser.user.tag} не замучен`);
+    }
 
-  const reason = reasonString || 'без причины';
-
-  if (!mentionedUser.moderatable || isAdminProtected(mentionedUser))
-    return message.reply('невозможно замутить этого пользователя');
-
-  try {
-    await mentionedUser.timeout(duration, reason);
-    return message.reply(t.muted(mentionedUser.user.tag, humanDuration, reason));
-  } catch (err) {
-    console.error('mute error:', err);
-    return message.reply('ошибка при выдаче мута. убедитесь, что у бота есть права и корректное время.');
+    try {
+      await mentionedUser.timeout(null);
+      return message.reply(t.unmuted(mentionedUser.user.tag));
+    } catch (err) {
+      console.error('unmute error:', err);
+      return message.reply('не удалось снять мут. проверьте права бота.');
+    }
   }
-}
-
-// =================== !unmute / !снятьмут ===================
-if (cmd === '!unmute' || cmd === '!снятьмут') {
-  if (!canUse(1)) return message.reply(t.noPerm);
-
-  const mentionedUser =
-    message.mentions.members.first() ||
-    (args[0] ? message.guild.members.cache.get(args[0].replace(/[<@!>]/g, '')) : null);
-
-  if (!mentionedUser) return message.reply(t.noMemberOnServer(args[0] || ''));
-
-  // Проверяем, есть ли у пользователя активный мут
-  if (!mentionedUser.isCommunicationDisabled()) {
-    return message.reply(`пользователь ${mentionedUser.user.tag} не замучен`);
-  }
-
-  try {
-    await mentionedUser.timeout(null);
-    return message.reply(t.unmuted(mentionedUser.user.tag));
-  } catch (err) {
-    console.error('unmute error:', err);
-    return message.reply('не удалось снять мут. проверьте права бота.');
-  }
-}
-
 
   if (cmd === '!warn' || cmd === '!варн') {
     if (!canUse(1)) return message.reply(t.noPerm);
     const mentionedUser = message.mentions.members.first() || (args[0] ? message.guild.members.cache.get(args[0].replace(/[<@!>]/g, '')) : null);
     if (!mentionedUser) return message.reply(t.noMemberOnServer(args[0] || ''));
     const reason = args.slice(1).join(' ') || 'без причины';
-    const now = Date.now();
-    let warns = userWarns.get(mentionedUser.id) || [];
-    warns = warns.filter(w => now - w.timestamp < 7 * 24 * 60 * 60 * 1000);
-    warns.push({ timestamp: now, reason });
-    userWarns.set(mentionedUser.id, warns);
+    
+    // Добавляем варн в базу
+    await addWarn(mentionedUser.id, reason);
+    
+    // Получаем все варны пользователя
+    const warns = await getUserWarns(mentionedUser.id);
 
     if (warns.length >= 3) {
-      await mentionedUser.ban({ reason: '3 warns in 7 days' });
-      userWarns.delete(mentionedUser.id);
+      await mentionedUser.ban({ reason: '3 предупреждения за 7 дней' });
+      await clearUserWarns(mentionedUser.id);
       return message.reply(`пользователь ${mentionedUser.user.tag} получил 3 предупреждения за 7 дней и был забанен`);
     }
 
@@ -277,10 +340,7 @@ if (cmd === '!unmute' || cmd === '!снятьмут') {
   }
 
   if (cmd === '!warns' || cmd === '!варны') {
-    const now = Date.now();
-    let warns = userWarns.get(message.author.id) || [];
-    warns = warns.filter(w => now - w.timestamp < 7 * 24 * 60 * 60 * 1000);
-    userWarns.set(message.author.id, warns);
+    const warns = await getUserWarns(message.author.id);
 
     if (warns.length === 0) {
       try {
@@ -291,7 +351,7 @@ if (cmd === '!unmute' || cmd === '!снятьмут') {
       }
     }
 
-    const list = warns.map((w, i) => `${i + 1}. ${w.reason}`).join('\n');
+    const list = warns.map((w, i) => `${i + 1}. ${w.reason} (${new Date(w.created_at).toLocaleDateString()})`).join('\n');
     try {
       await message.author.send(`${t.yourWarnsHeader}\n${list}`);
       return message.reply('предупреждения отправлены в лс');
@@ -340,15 +400,14 @@ if (cmd === '!unmute' || cmd === '!снятьмут') {
     return message.reply(t.unbanned(found.user.tag));
   }
 
-  // ✅ теперь уровень 3 тоже может повышать/понижать
   if (cmd === '!повысить' || cmd === '!promote') {
     if (!canUse(3)) return message.reply(t.noPerm);
     const mentionedUser = message.mentions.members.first() || (args[0] ? message.guild.members.cache.get(args[0]) : null);
     if (!mentionedUser) return message.reply(t.mentionUser);
-    const currentLevel = getLevel(mentionedUser.id);
+    const currentLevel = await getLevel(mentionedUser.id);
     if (currentLevel >= 3) return message.reply(t.maxLevel(mentionedUser.user.tag));
     const newLevel = currentLevel + 1;
-    setLevel(mentionedUser.id, newLevel);
+    await setLevel(mentionedUser.id, newLevel);
     return message.reply(t.promote(mentionedUser.user.tag, newLevel));
   }
 
@@ -356,10 +415,10 @@ if (cmd === '!unmute' || cmd === '!снятьмут') {
     if (!canUse(3)) return message.reply(t.noPerm);
     const mentionedUser = message.mentions.members.first() || (args[0] ? message.guild.members.cache.get(args[0]) : null);
     if (!mentionedUser) return message.reply(t.mentionUser);
-    const currentLevel = getLevel(mentionedUser.id);
+    const currentLevel = await getLevel(mentionedUser.id);
     if (currentLevel <= 0) return message.reply(t.minLevel(mentionedUser.user.tag));
     const newLevel = currentLevel - 1;
-    setLevel(mentionedUser.id, newLevel);
+    await setLevel(mentionedUser.id, newLevel);
     return message.reply(t.demote(mentionedUser.user.tag, newLevel));
   }
 
