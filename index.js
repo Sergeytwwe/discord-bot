@@ -32,7 +32,7 @@ const officialReplyEn = 'i can only respond in the official server channels.';
 // Функция генерации уникального ключа
 function generateUniqueKey() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  const segments = [5, 6, 5]; // Длины сегментов
+  const segments = [5, 6, 5];
   let key = 'VERYUP-';
   
   for (let i = 0; i < segments.length; i++) {
@@ -60,19 +60,19 @@ function parseDuration(durationStr) {
   const unit = match[2].toLowerCase();
   
   switch (unit) {
-    case 'd': // дни
+    case 'd':
       return { 
         interval: `${amount} days`, 
         milliseconds: amount * 24 * 60 * 60 * 1000,
         human: `${amount} ${getRussianDays(amount)}`
       };
-    case 'h': // часы
+    case 'h':
       return { 
         interval: `${amount} hours`, 
         milliseconds: amount * 60 * 60 * 1000,
         human: `${amount} ${getRussianHours(amount)}`
       };
-    case 'm': // минуты
+    case 'm':
       return { 
         interval: `${amount} minutes`, 
         milliseconds: amount * 60 * 1000,
@@ -193,6 +193,7 @@ async function generateAndSaveKey(userId, durationStr = null) {
     // Парсим длительность
     let durationInfo = null;
     let expiresAt = null;
+    let expired = false;
     
     if (durationStr) {
       durationInfo = parseDuration(durationStr);
@@ -200,13 +201,13 @@ async function generateAndSaveKey(userId, durationStr = null) {
         throw new Error('Неверный формат длительности. Используйте: 1d, 2h, 30m');
       }
       expiresAt = new Date(Date.now() + durationInfo.milliseconds).toISOString();
+      expired = false;
     }
 
     // Генерируем ключ пока не найдем уникальный
     while (!isUnique && attempts < maxAttempts) {
       key = generateUniqueKey();
       
-      // Проверяем существует ли такой ключ
       const { data: existingKey, error: checkError } = await supabase
         .from('activation_keys')
         .select('key')
@@ -214,13 +215,10 @@ async function generateAndSaveKey(userId, durationStr = null) {
         .single();
 
       if (checkError && checkError.code === 'PGRST116') {
-        // Ключ не найден - уникальный
         isUnique = true;
       } else if (!checkError && existingKey) {
-        // Ключ уже существует, пробуем снова
         attempts++;
       } else {
-        // Другая ошибка
         console.error('Error checking key uniqueness:', checkError);
         attempts++;
       }
@@ -239,7 +237,8 @@ async function generateAndSaveKey(userId, durationStr = null) {
         created_at: new Date().toISOString(),
         is_used: false,
         duration: durationInfo ? durationInfo.interval : null,
-        expires_at: expiresAt
+        expires_at: expiresAt,
+        expired: expired
       });
 
     if (insertError) {
@@ -258,7 +257,7 @@ async function getGeneratedKeys(userId) {
   try {
     const { data, error } = await supabase
       .from('activation_keys')
-      .select('key, created_at, is_used, duration, expires_at')
+      .select('key, created_at, is_used, duration, expires_at, expired')
       .eq('created_by', userId)
       .order('created_at', { ascending: false })
       .limit(10);
@@ -318,7 +317,6 @@ client.once(Events.ClientReady, async (c) => {
   console.log('using supabase for data storage');
   console.log('commands: !ping, !ban, !kick, !mute, !unmute, !unban, !warn, !warns, !help, !повысить, !понизить, /generatekey');
 
-  // Автоматически даем уровень 3 владельцам серверов
   const guilds = client.guilds.cache;
   for (const [guildId, guild] of guilds) {
     const owner = await guild.fetchOwner();
@@ -384,7 +382,7 @@ client.on(Events.MessageCreate, async (message) => {
         await message.author.send('у вас нет прав для генерации ключей');
         return;
       } catch {
-        return; // Просто игнорируем если не можем отправить в лс
+        return;
       }
     }
 
@@ -392,17 +390,17 @@ client.on(Events.MessageCreate, async (message) => {
       const durationStr = args[0] || null;
       const { key, durationInfo } = await generateAndSaveKey(message.author.id, durationStr);
       
-      // Формируем сообщение о ключе
       let keyMessage = `сгенерирован ключ: ${key}`;
       if (durationInfo) {
         keyMessage += `\nсрок действия: ${durationInfo.human}`;
         const expiresDate = new Date(Date.now() + durationInfo.milliseconds);
         keyMessage += `\nистекает: ${expiresDate.toLocaleString('ru-RU')}`;
+        keyMessage += `\nстатус: активен`;
       } else {
         keyMessage += `\nсрок действия: бессрочный`;
+        keyMessage += `\nстатус: активен`;
       }
       
-      // Отправляем ключ только в ЛС
       try {
         await message.author.send(keyMessage);
         await message.reply('ключ сгенерирован и отправлен в лс');
@@ -415,13 +413,11 @@ client.on(Events.MessageCreate, async (message) => {
       try {
         await message.author.send(`ошибка при генерации ключа: ${error.message}`);
       } catch {
-        // Игнорируем ошибку отправки в лс
       }
     }
     return;
   }
 
-  // Остальной код команд остается без изменений...
   if (cmd === '!ping' || cmd === '!пинг') {
     return message.reply('понг! бот работает');
   }
@@ -534,10 +530,8 @@ client.on(Events.MessageCreate, async (message) => {
     if (!mentionedUser) return message.reply(t.noMemberOnServer(args[0] || ''));
     const reason = args.slice(1).join(' ') || 'без причины';
     
-    // Добавляем варн в базу
     await addWarn(mentionedUser.id, reason);
     
-    // Получаем все варны пользователя
     const warns = await getUserWarns(mentionedUser.id);
 
     if (warns.length >= 3) {
@@ -639,10 +633,8 @@ client.on(Events.MessageCreate, async (message) => {
 client.on('error', (err) => console.error('discord client error:', err));
 process.on('unhandledRejection', (err) => console.error('unhandled error:', err));
 
-// Запускаем бота
 client.login(process.env.DISCORD_TOKEN).catch(err => console.error('auth error:', err.message));
 
-// Экспортируем функцию для Vercel
 module.exports = (req, res) => {
   res.status(200).send('Discord Bot is running!');
 };
