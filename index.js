@@ -273,6 +273,47 @@ async function getGeneratedKeys(userId) {
   }
 }
 
+// НОВАЯ ФУНКЦИЯ: Логирование модерационных действий
+async function logModAction(action, moderatorId, targetUserId, reason = null, duration = null, successful = true) {
+  try {
+    const { error } = await supabase
+      .from('moderation_logs')
+      .insert({
+        action: action,
+        moderator_id: moderatorId,
+        target_user_id: targetUserId,
+        reason: reason || 'без причины',
+        duration: duration,
+        successful: successful,
+        created_at: new Date().toISOString()
+      });
+
+    if (error) {
+      console.error('Error logging mod action:', error);
+    }
+  } catch (error) {
+    console.error('Error in logModAction:', error);
+  }
+}
+
+// НОВАЯ ФУНКЦИЯ: Автоочистка старых варнов
+async function cleanupOldWarns() {
+  try {
+    const { error } = await supabase
+      .from('user_warns')
+      .delete()
+      .lt('created_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString());
+
+    if (error) {
+      console.error('Error cleaning up old warns:', error);
+    } else {
+      console.log('Old warns cleanup completed');
+    }
+  } catch (error) {
+    console.error('Error in cleanupOldWarns:', error);
+  }
+}
+
 function parseDurationFromTokens(tokens, startIndex = 0) {
   for (let i = startIndex; i < tokens.length; i++) {
     const tok = tokens[i];
@@ -322,6 +363,10 @@ client.once(Events.ClientReady, async (c) => {
     const owner = await guild.fetchOwner();
     await setLevel(owner.id, 3);
   }
+
+  // Запускаем автоочистку каждые 24 часа
+  setInterval(cleanupOldWarns, 24 * 60 * 60 * 1000);
+  console.log('Auto-cleanup for warns scheduled every 24 hours');
 });
 
 client.on(Events.MessageCreate, async (message) => {
@@ -439,9 +484,12 @@ client.on(Events.MessageCreate, async (message) => {
     const mentionedUser = message.mentions.members.first() || (args[0] ? message.guild.members.cache.get(args[0]) : null);
     if (!mentionedUser) return message.reply(t.noMemberOnServer(args[0] || ''));
     const reason = args.slice(1).join(' ') || 'без причины';
-    if (!mentionedUser.bannable || await isAdminProtected(mentionedUser))
+    if (!mentionedUser.bannable || await isAdminProtected(mentionedUser)) {
+      await logModAction('ban', message.author.id, mentionedUser.id, reason, null, false);
       return message.reply('невозможно забанить этого пользователя');
+    }
     await mentionedUser.ban({ reason });
+    await logModAction('ban', message.author.id, mentionedUser.id, reason);
     return message.reply(t.banned(mentionedUser.user.tag, reason));
   }
 
@@ -451,10 +499,13 @@ client.on(Events.MessageCreate, async (message) => {
       message.mentions.members.first() ||
       (args[0] ? message.guild.members.cache.get(args[0].replace(/[<@!>]/g, '')) : null);
     if (!mentionedUser) return message.reply(t.noMemberOnServer(args[0] || ''));
-    if (!mentionedUser.kickable || await isAdminProtected(mentionedUser))
+    if (!mentionedUser.kickable || await isAdminProtected(mentionedUser)) {
+      await logModAction('kick', message.author.id, mentionedUser.id, args.slice(1).join(' ') || 'без причины', null, false);
       return message.reply('невозможно кикнуть этого пользователя');
+    }
     const reason = args.slice(1).join(' ') || 'без причины';
     await mentionedUser.kick(reason);
+    await logModAction('kick', message.author.id, mentionedUser.id, reason);
     return message.reply(t.kicked(`${mentionedUser.user.tag} (причина: ${reason})`));
   }
 
@@ -490,14 +541,18 @@ client.on(Events.MessageCreate, async (message) => {
 
     const reason = reasonString || 'без причины';
 
-    if (!mentionedUser.moderatable || await isAdminProtected(mentionedUser))
+    if (!mentionedUser.moderatable || await isAdminProtected(mentionedUser)) {
+      await logModAction('mute', message.author.id, mentionedUser.id, reason, humanDuration, false);
       return message.reply('невозможно замутить этого пользователя');
+    }
 
     try {
       await mentionedUser.timeout(duration, reason);
+      await logModAction('mute', message.author.id, mentionedUser.id, reason, humanDuration);
       return message.reply(t.muted(mentionedUser.user.tag, humanDuration, reason));
     } catch (err) {
       console.error('mute error:', err);
+      await logModAction('mute', message.author.id, mentionedUser.id, reason, humanDuration, false);
       return message.reply('ошибка при выдаче мута. убедитесь, что у бота есть права и корректное время.');
     }
   }
@@ -512,14 +567,17 @@ client.on(Events.MessageCreate, async (message) => {
     if (!mentionedUser) return message.reply(t.noMemberOnServer(args[0] || ''));
 
     if (!mentionedUser.isCommunicationDisabled()) {
+      await logModAction('unmute', message.author.id, mentionedUser.id, null, null, false);
       return message.reply(`пользователь ${mentionedUser.user.tag} не замучен`);
     }
 
     try {
       await mentionedUser.timeout(null);
+      await logModAction('unmute', message.author.id, mentionedUser.id);
       return message.reply(t.unmuted(mentionedUser.user.tag));
     } catch (err) {
       console.error('unmute error:', err);
+      await logModAction('unmute', message.author.id, mentionedUser.id, null, null, false);
       return message.reply('не удалось снять мут. проверьте права бота.');
     }
   }
@@ -531,12 +589,14 @@ client.on(Events.MessageCreate, async (message) => {
     const reason = args.slice(1).join(' ') || 'без причины';
     
     await addWarn(mentionedUser.id, reason);
+    await logModAction('warn', message.author.id, mentionedUser.id, reason);
     
     const warns = await getUserWarns(mentionedUser.id);
 
     if (warns.length >= 3) {
       await mentionedUser.ban({ reason: '3 предупреждения за 7 дней' });
       await clearUserWarns(mentionedUser.id);
+      await logModAction('ban', 'auto-system', mentionedUser.id, '3 предупреждения за 7 дней');
       return message.reply(`пользователь ${mentionedUser.user.tag} получил 3 предупреждения за 7 дней и был забанен`);
     }
 
@@ -601,8 +661,12 @@ client.on(Events.MessageCreate, async (message) => {
     if (!id) return message.reply('укажите id для разбана');
     const bans = await message.guild.bans.fetch();
     const found = bans.get(id);
-    if (!found) return message.reply(t.notInBanlist(id));
+    if (!found) {
+      await logModAction('unban', message.author.id, id, null, null, false);
+      return message.reply(t.notInBanlist(id));
+    }
     await message.guild.members.unban(id);
+    await logModAction('unban', message.author.id, id);
     return message.reply(t.unbanned(found.user.tag));
   }
 
@@ -614,6 +678,7 @@ client.on(Events.MessageCreate, async (message) => {
     if (currentLevel >= 3) return message.reply(t.maxLevel(mentionedUser.user.tag));
     const newLevel = currentLevel + 1;
     await setLevel(mentionedUser.id, newLevel);
+    await logModAction('promote', message.author.id, mentionedUser.id, `уровень ${currentLevel} -> ${newLevel}`);
     return message.reply(t.promote(mentionedUser.user.tag, newLevel));
   }
 
@@ -625,6 +690,7 @@ client.on(Events.MessageCreate, async (message) => {
     if (currentLevel <= 0) return message.reply(t.minLevel(mentionedUser.user.tag));
     const newLevel = currentLevel - 1;
     await setLevel(mentionedUser.id, newLevel);
+    await logModAction('demote', message.author.id, mentionedUser.id, `уровень ${currentLevel} -> ${newLevel}`);
     return message.reply(t.demote(mentionedUser.user.tag, newLevel));
   }
 
