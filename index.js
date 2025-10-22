@@ -25,7 +25,7 @@ const client = new Client({
 // Разрешенные каналы для модерационных команд
 const moderationChannels = [
   '1424337548439982203', // модерация 1
-  '1424338677869314078', // модерация 2
+  '1430559148935745666', // модерация 2
   '1424338039181676730', // модерация 3
   '1424338237559930941', // модерация 4
 ];
@@ -584,7 +584,7 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
   }
 });
 
-// Обработчик удаления реакций (на случай если пользователь уберет реакцию)
+// Обработчик удаления реакций (если пользователь убирает реакцию галочки)
 client.on(Events.MessageReactionRemove, async (reaction, user) => {
   try {
     if (user.bot) return;
@@ -600,12 +600,74 @@ client.on(Events.MessageReactionRemove, async (reaction, user) => {
     // Если убрали реакцию, убираем Verified и возвращаем Unverified
     if (member.roles.cache.has(verifiedRole.id)) {
       await member.roles.remove(verifiedRole);
+      console.log(`Removed Verified role from ${user.tag} (reaction removed)`);
+    }
+    
+    // Добавляем роль Unverified обратно
+    if (unverifiedRole && !member.roles.cache.has(unverifiedRole.id)) {
       await member.roles.add(unverifiedRole);
-      console.log(`User ${user.tag} removed verification`);
+      console.log(`Added Unverified role back to ${user.tag} (reaction removed)`);
+      
+      // Уведомляем пользователя
+      try {
+        await user.send('❌ Верификация отменена. Вы снова получили роль Unverified.');
+      } catch (dmError) {
+        console.log('Cannot send DM to user about verification cancellation');
+      }
     }
     
   } catch (error) {
     console.error('Error handling reaction remove:', error);
+  }
+});
+
+// Обработчик выхода пользователя с сервера
+client.on(Events.GuildMemberRemove, async (member) => {
+  try {
+    console.log(`User left: ${member.user.tag} (${member.user.id})`);
+    
+    // Отправляем сообщение о выходе пользователя
+    const welcomeChannel = member.guild.channels.cache.get(WELCOME_CHANNEL_ID);
+    
+    if (welcomeChannel) {
+      // Создаем красивое сообщение о выходе
+      const leaveEmbed = {
+        color: 0xff0000,
+        title: '🚪 Пользователь покинул сервер',
+        description: `**${member.user.tag}** (${member.user.id})`,
+        thumbnail: {
+          url: member.user.displayAvatarURL({ dynamic: true })
+        },
+        fields: [
+          {
+            name: 'Присоединился',
+            value: `<t:${Math.floor(member.joinedTimestamp / 1000)}:R>`,
+            inline: true
+          },
+          {
+            name: 'Аккаунт создан',
+            value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>`,
+            inline: true
+          }
+        ],
+        timestamp: new Date().toISOString(),
+        footer: {
+          text: `ID: ${member.user.id}`
+        }
+      };
+      
+      await welcomeChannel.send({ 
+        content: `@everyone, пользователь **${member.user.tag}** покинул сервер! 👋`,
+        embeds: [leaveEmbed] 
+      });
+      
+      console.log(`Leave message sent for ${member.user.tag}`);
+    } else {
+      console.error('Welcome channel not found for leave message:', WELCOME_CHANNEL_ID);
+    }
+    
+  } catch (error) {
+    console.error('Error handling member leave:', error);
   }
 });
 
@@ -983,4 +1045,3 @@ client.on(Events.MessageCreate, async (message) => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
-
