@@ -403,13 +403,22 @@ async function findOrCreateVerifiedRole(guild) {
     );
 
     if (!verifiedRole) {
-      // Создаем новую роль
+      // Создаем новую роль с правильной позицией
       verifiedRole = await guild.roles.create({
         name: 'Verified',
         color: 'GREEN',
         reason: 'Роль для верифицированных пользователей',
         permissions: []
       });
+      
+      // Перемещаем роль выше роли бота
+      const botMember = await guild.members.fetch(client.user.id);
+      const botRole = botMember.roles.highest;
+      
+      if (verifiedRole.position <= botRole.position) {
+        await verifiedRole.setPosition(botRole.position - 1);
+      }
+      
       console.log('Created Verified role:', verifiedRole.id);
     }
 
@@ -511,29 +520,92 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
     if (reaction.emoji.name !== '✅') return;
     
     const member = reaction.message.guild.members.cache.get(user.id);
-    if (!member) return;
+    if (!member) {
+      console.log('Member not found for user:', user.id);
+      return;
+    }
+    
+    console.log(`Processing verification for user: ${user.tag}`);
     
     // Находим роли
     const verifiedRole = await findOrCreateVerifiedRole(reaction.message.guild);
     const unverifiedRole = await findOrCreateUnverifiedRole(reaction.message.guild);
     
-    // Удаляем роль Unverified и добавляем Verified
-    if (unverifiedRole && member.roles.cache.has(unverifiedRole.id)) {
-      await member.roles.remove(unverifiedRole);
+    console.log('Found roles:', {
+      verified: verifiedRole?.name,
+      unverified: unverifiedRole?.name
+    });
+    
+    // Проверяем иерархию ролей
+    const botMember = await reaction.message.guild.members.fetch(client.user.id);
+    if (verifiedRole.position >= botMember.roles.highest.position) {
+      console.error('Bot cannot assign Verified role - hierarchy issue');
+      try {
+        await user.send('❌ Ошибка верификации: роль Verified находится выше роли бота. Пожалуйста, сообщите администраторам.');
+      } catch (dmError) {
+        console.log('Cannot send DM to user about hierarchy issue');
+      }
+      return;
     }
-    await member.roles.add(verifiedRole);
     
-    console.log(`User ${user.tag} verified successfully`);
+    // Удаляем роль Unverified
+    if (unverifiedRole && member.roles.cache.has(unverifiedRole.id)) {
+      try {
+        await member.roles.remove(unverifiedRole);
+        console.log(`Removed Unverified role from ${user.tag}`);
+      } catch (error) {
+        console.error('Error removing Unverified role:', error);
+      }
+    }
     
-    // Отправляем сообщение об успешной верификации
+    // Добавляем роль Verified
     try {
-      await user.send('✅ Вы успешно прошли верификацию! Теперь у вас есть доступ к серверу.');
-    } catch (dmError) {
-      console.log('Cannot send DM to user:', dmError);
+      await member.roles.add(verifiedRole);
+      console.log(`Added Verified role to ${user.tag}`);
+      
+      // Отправляем сообщение об успешной верификации
+      try {
+        await user.send('✅ Вы успешно прошли верификацию! Теперь у вас есть доступ к серверу.');
+      } catch (dmError) {
+        console.log('Cannot send DM to user:', dmError);
+      }
+      
+    } catch (error) {
+      console.error('Error adding Verified role:', error);
+      try {
+        await user.send('❌ Ошибка при выдаче роли Verified. Пожалуйста, сообщите администраторам.');
+      } catch (dmError) {
+        console.log('Cannot send DM to user about role error');
+      }
     }
     
   } catch (error) {
     console.error('Error handling verification reaction:', error);
+  }
+});
+
+// Обработчик удаления реакций (на случай если пользователь уберет реакцию)
+client.on(Events.MessageReactionRemove, async (reaction, user) => {
+  try {
+    if (user.bot) return;
+    if (reaction.message.channel.id !== VERIFICATION_CHANNEL_ID) return;
+    if (reaction.emoji.name !== '✅') return;
+    
+    const member = reaction.message.guild.members.cache.get(user.id);
+    if (!member) return;
+    
+    const verifiedRole = await findOrCreateVerifiedRole(reaction.message.guild);
+    const unverifiedRole = await findOrCreateUnverifiedRole(reaction.message.guild);
+    
+    // Если убрали реакцию, убираем Verified и возвращаем Unverified
+    if (member.roles.cache.has(verifiedRole.id)) {
+      await member.roles.remove(verifiedRole);
+      await member.roles.add(unverifiedRole);
+      console.log(`User ${user.tag} removed verification`);
+    }
+    
+  } catch (error) {
+    console.error('Error handling reaction remove:', error);
   }
 });
 
