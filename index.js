@@ -22,13 +22,22 @@ const client = new Client({
   partials: ['CHANNEL', 'MESSAGE', 'REACTION'],
 });
 
-const allowedChannels = [
-  '1424338677869314078',
-  '1424337548439982203',
+// Разрешенные каналы для модерационных команд
+const moderationChannels = [
+  '1424337548439982203', // модерация 1
+  '1424338677869314078', // модерация 2
+  '1424338039181676730', // модерация 3
+  '1424338237559930941', // модерация 4
 ];
 
-// ID канала для верификации
+// Канал для команд помощи
+const HELP_CHANNEL_ID = '1430527389892612186';
+
+// Канал для верификации
 const VERIFICATION_CHANNEL_ID = '1424339843655401582';
+
+// Канал для приветствий
+const WELCOME_CHANNEL_ID = '1424339559159824487';
 
 const officialReplyRu = 'я могу отвечать только в официальных каналах сервера.';
 const officialReplyEn = 'i can only respond in the official server channels.';
@@ -475,13 +484,13 @@ client.on(Events.GuildMemberAdd, async (member) => {
     await member.roles.add(unverifiedRole);
     console.log(`Assigned Unverified role to ${member.user.tag}`);
     
-    // Отправляем приветственное сообщение
-    const welcomeChannel = member.guild.systemChannel || member.guild.channels.cache.find(channel => 
-      channel.type === 0 && channel.permissionsFor(member.guild.members.me).has(PermissionFlagsBits.SendMessages)
-    );
+    // Отправляем приветственное сообщение в правильный канал
+    const welcomeChannel = member.guild.channels.cache.get(WELCOME_CHANNEL_ID);
     
     if (welcomeChannel) {
       await welcomeChannel.send(`Приветствую ${member.user}! Добро пожаловать на сервер! Пожалуйста, пройдите верификацию в канале <#${VERIFICATION_CHANNEL_ID}>`);
+    } else {
+      console.error('Welcome channel not found:', WELCOME_CHANNEL_ID);
     }
     
   } catch (error) {
@@ -509,7 +518,7 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
     const unverifiedRole = await findOrCreateUnverifiedRole(reaction.message.guild);
     
     // Удаляем роль Unverified и добавляем Verified
-    if (unverifiedRole) {
+    if (unverifiedRole && member.roles.cache.has(unverifiedRole.id)) {
       await member.roles.remove(unverifiedRole);
     }
     await member.roles.add(verifiedRole);
@@ -535,8 +544,6 @@ client.on(Events.MessageCreate, async (message) => {
     const isRussian = /[а-яё]/i.test(message.content);
     return message.reply(isRussian ? officialReplyRu : officialReplyEn);
   }
-
-  if (!allowedChannels.includes(message.channel.id)) return;
 
   const parts = message.content.trim().split(/\s+/);
   if (parts.length === 0) return;
@@ -578,6 +585,27 @@ client.on(Events.MessageCreate, async (message) => {
   }
 
   const isAdminProtected = async (member) => await getLevel(member.id) === 3;
+
+  // Проверка каналов для команд помощи
+  const isHelpChannel = message.channel.id === HELP_CHANNEL_ID;
+  const isModerationChannel = moderationChannels.includes(message.channel.id);
+
+  // Команды помощи работают только в HELP_CHANNEL_ID
+  if ((cmd === '!help' || cmd === '!команды') && !isHelpChannel) {
+    return; // Игнорируем команду в других каналах
+  }
+
+  // Модерационные команды работают только в moderationChannels
+  const moderationCommands = [
+    '!ban', '!бан', '!kick', '!кик', '!mute', '!мут', 
+    '!unmute', '!снятьмут', '!warn', '!варн', '!unban', 
+    '!разбан', '!banlist', '!банлист', '!warns', '!варны',
+    '!повысить', '!promote', '!понизить', '!demote'
+  ];
+
+  if (moderationCommands.includes(cmd) && !isModerationChannel) {
+    return; // Игнорируем модерационные команды в других каналах
+  }
 
   // Команда настройки верификации
   if (cmd === '/setupverify') {
@@ -865,6 +893,7 @@ client.on(Events.MessageCreate, async (message) => {
     if (currentLevel >= 3) return message.reply(t.maxLevel(mentionedUser.user.tag));
     const newLevel = currentLevel + 1;
     await setLevel(mentionedUser.id, newLevel);
+    await logModAction('promote', message.author.id, mentionedUser.id, `уровень ${currentLevel} -> ${newLevel}`);
     return message.reply(t.promote(mentionedUser.user.tag, newLevel));
   }
 
@@ -876,6 +905,7 @@ client.on(Events.MessageCreate, async (message) => {
     if (currentLevel <= 0) return message.reply(t.minLevel(mentionedUser.user.tag));
     const newLevel = currentLevel - 1;
     await setLevel(mentionedUser.id, newLevel);
+    await logModAction('demote', message.author.id, mentionedUser.id, `уровень ${currentLevel} -> ${newLevel}`);
     return message.reply(t.demote(mentionedUser.user.tag, newLevel));
   }
 });
