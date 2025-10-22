@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, Events } = require('discord.js');
+const { Client, GatewayIntentBits, Events, PermissionFlagsBits } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
 
 console.log('starting bot with supabase database...');
@@ -17,14 +17,18 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.GuildMessageReactions,
   ],
-  partials: ['CHANNEL'],
+  partials: ['CHANNEL', 'MESSAGE', 'REACTION'],
 });
 
 const allowedChannels = [
   '1424338677869314078',
   '1424337548439982203',
 ];
+
+// ID канала для верификации
+const VERIFICATION_CHANNEL_ID = '1424339843655401582';
 
 const officialReplyRu = 'я могу отвечать только в официальных каналах сервера.';
 const officialReplyEn = 'i can only respond in the official server channels.';
@@ -353,20 +357,175 @@ function formatHumanDuration(value, unit) {
   return `${v}`;
 }
 
+// НОВАЯ ФУНКЦИЯ: Создание сообщения для верификации
+async function createVerificationMessage(channel) {
+  try {
+    const embed = {
+      title: '🔐 Верификация',
+      description: 'Для доступа к серверу нажмите на реакцию ✅ ниже',
+      color: 0x00ff00,
+      timestamp: new Date().toISOString(),
+      footer: {
+        text: 'Система верификации'
+      }
+    };
+
+    const message = await channel.send({ 
+      content: '**Верификация**',
+      embeds: [embed] 
+    });
+    
+    await message.react('✅');
+    console.log('Verification message created with ID:', message.id);
+    return message.id;
+  } catch (error) {
+    console.error('Error creating verification message:', error);
+    throw error;
+  }
+}
+
+// НОВАЯ ФУНКЦИЯ: Найти или создать роль Verified
+async function findOrCreateVerifiedRole(guild) {
+  try {
+    // Ищем существующую роль
+    let verifiedRole = guild.roles.cache.find(role => 
+      role.name === 'Verified' || 
+      role.name === 'Верифицирован'
+    );
+
+    if (!verifiedRole) {
+      // Создаем новую роль
+      verifiedRole = await guild.roles.create({
+        name: 'Verified',
+        color: 'GREEN',
+        reason: 'Роль для верифицированных пользователей',
+        permissions: []
+      });
+      console.log('Created Verified role:', verifiedRole.id);
+    }
+
+    return verifiedRole;
+  } catch (error) {
+    console.error('Error finding/creating Verified role:', error);
+    throw error;
+  }
+}
+
+// НОВАЯ ФУНКЦИЯ: Найти или создать роль Unverified
+async function findOrCreateUnverifiedRole(guild) {
+  try {
+    // Ищем существующую роль
+    let unverifiedRole = guild.roles.cache.find(role => 
+      role.name === 'Unverified' || 
+      role.name === 'Неверифицирован'
+    );
+
+    if (!unverifiedRole) {
+      // Создаем новую роль
+      unverifiedRole = await guild.roles.create({
+        name: 'Unverified',
+        color: 'GREY',
+        reason: 'Роль для новых пользователей',
+        permissions: []
+      });
+      console.log('Created Unverified role:', unverifiedRole.id);
+    }
+
+    return unverifiedRole;
+  } catch (error) {
+    console.error('Error finding/creating Unverified role:', error);
+    throw error;
+  }
+}
+
 client.once(Events.ClientReady, async (c) => {
   console.log(`bot started: ${c.user.tag}`);
   console.log('using supabase for data storage');
-  console.log('commands: !ping, !ban, !kick, !mute, !unmute, !unban, !warn, !warns, !help, !повысить, !понизить, /generatekey');
+  console.log('commands: !ping, !ban, !kick, !mute, !unmute, !unban, !warn, !warns, !help, !повысить, !понизить, /generatekey, /setupverify');
 
   const guilds = client.guilds.cache;
   for (const [guildId, guild] of guilds) {
     const owner = await guild.fetchOwner();
     await setLevel(owner.id, 3);
+    
+    // Автоматически создаем роли при запуске бота
+    try {
+      await findOrCreateVerifiedRole(guild);
+      await findOrCreateUnverifiedRole(guild);
+      console.log(`Roles created/verified for guild: ${guild.name}`);
+    } catch (error) {
+      console.error(`Error setting up roles for guild ${guild.name}:`, error);
+    }
   }
 
   // Запускаем автоочистку каждые 24 часа
   setInterval(cleanupOldWarns, 24 * 60 * 60 * 1000);
   console.log('Auto-cleanup for warns scheduled every 24 hours');
+});
+
+// Обработчик входа нового пользователя
+client.on(Events.GuildMemberAdd, async (member) => {
+  try {
+    console.log(`New member joined: ${member.user.tag}`);
+    
+    // Находим или создаем роль Unverified
+    const unverifiedRole = await findOrCreateUnverifiedRole(member.guild);
+    
+    // Выдаем роль Unverified
+    await member.roles.add(unverifiedRole);
+    console.log(`Assigned Unverified role to ${member.user.tag}`);
+    
+    // Отправляем приветственное сообщение
+    const welcomeChannel = member.guild.systemChannel || member.guild.channels.cache.find(channel => 
+      channel.type === 0 && channel.permissionsFor(member.guild.members.me).has(PermissionFlagsBits.SendMessages)
+    );
+    
+    if (welcomeChannel) {
+      await welcomeChannel.send(`Приветствую ${member.user}! Добро пожаловать на сервер! Пожалуйста, пройдите верификацию в канале <#${VERIFICATION_CHANNEL_ID}>`);
+    }
+    
+  } catch (error) {
+    console.error('Error handling new member:', error);
+  }
+});
+
+// Обработчик реакций для верификации
+client.on(Events.MessageReactionAdd, async (reaction, user) => {
+  try {
+    // Проверяем, что это не реакция бота
+    if (user.bot) return;
+    
+    // Проверяем, что реакция в нужном канале
+    if (reaction.message.channel.id !== VERIFICATION_CHANNEL_ID) return;
+    
+    // Проверяем, что это нужная реакция
+    if (reaction.emoji.name !== '✅') return;
+    
+    const member = reaction.message.guild.members.cache.get(user.id);
+    if (!member) return;
+    
+    // Находим роли
+    const verifiedRole = await findOrCreateVerifiedRole(reaction.message.guild);
+    const unverifiedRole = await findOrCreateUnverifiedRole(reaction.message.guild);
+    
+    // Удаляем роль Unverified и добавляем Verified
+    if (unverifiedRole) {
+      await member.roles.remove(unverifiedRole);
+    }
+    await member.roles.add(verifiedRole);
+    
+    console.log(`User ${user.tag} verified successfully`);
+    
+    // Отправляем сообщение об успешной верификации
+    try {
+      await user.send('✅ Вы успешно прошли верификацию! Теперь у вас есть доступ к серверу.');
+    } catch (dmError) {
+      console.log('Cannot send DM to user:', dmError);
+    }
+    
+  } catch (error) {
+    console.error('Error handling verification reaction:', error);
+  }
 });
 
 client.on(Events.MessageCreate, async (message) => {
@@ -419,6 +578,33 @@ client.on(Events.MessageCreate, async (message) => {
   }
 
   const isAdminProtected = async (member) => await getLevel(member.id) === 3;
+
+  // Команда настройки верификации
+  if (cmd === '/setupverify') {
+    if (!canUse(3)) {
+      try {
+        await message.author.send('у вас нет прав для настройки верификации');
+        return;
+      } catch {
+        return;
+      }
+    }
+
+    try {
+      const channel = message.guild.channels.cache.get(VERIFICATION_CHANNEL_ID);
+      if (!channel) {
+        return message.reply('канал для верификации не найден');
+      }
+
+      await createVerificationMessage(channel);
+      await message.reply('сообщение для верификации создано!');
+      
+    } catch (error) {
+      console.error('Error setting up verification:', error);
+      await message.reply('ошибка при создании сообщения верификации');
+    }
+    return;
+  }
 
   // Команда генерации ключа
   if (cmd === '/generatekey') {
@@ -651,6 +837,7 @@ client.on(Events.MessageCreate, async (message) => {
 !уровень — показать уровень
 /generatekey [время] — сгенерировать ключ (только для админов)
     примеры времени: 1d, 2h, 30m
+/setupverify — создать сообщение для верификации (только для админов)
     `;
     return message.reply(text);
   }
@@ -678,7 +865,6 @@ client.on(Events.MessageCreate, async (message) => {
     if (currentLevel >= 3) return message.reply(t.maxLevel(mentionedUser.user.tag));
     const newLevel = currentLevel + 1;
     await setLevel(mentionedUser.id, newLevel);
-    await logModAction('promote', message.author.id, mentionedUser.id, `уровень ${currentLevel} -> ${newLevel}`);
     return message.reply(t.promote(mentionedUser.user.tag, newLevel));
   }
 
@@ -690,17 +876,8 @@ client.on(Events.MessageCreate, async (message) => {
     if (currentLevel <= 0) return message.reply(t.minLevel(mentionedUser.user.tag));
     const newLevel = currentLevel - 1;
     await setLevel(mentionedUser.id, newLevel);
-    await logModAction('demote', message.author.id, mentionedUser.id, `уровень ${currentLevel} -> ${newLevel}`);
     return message.reply(t.demote(mentionedUser.user.tag, newLevel));
   }
-
 });
 
-client.on('error', (err) => console.error('discord client error:', err));
-process.on('unhandledRejection', (err) => console.error('unhandled error:', err));
-
-client.login(process.env.DISCORD_TOKEN).catch(err => console.error('auth error:', err.message));
-
-module.exports = (req, res) => {
-  res.status(200).send('Discord Bot is running!');
-};
+client.login(process.env.DISCORD_TOKEN);
