@@ -541,9 +541,9 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
     if (verifiedRole.position >= botMember.roles.highest.position) {
       console.error('Bot cannot assign Verified role - hierarchy issue');
       try {
-        await user.send('❌ Ошибка верификации: роль Verified находится выше роли бота. Пожалуйста, сообщите администраторам.');
+        await user.send('ошибка, свяжитесь с администрацией');
       } catch (dmError) {
-        console.log('Cannot send DM to user about hierarchy issue');
+        console.log('cannot send dm to user about hierarchy issue');
       }
       return;
     }
@@ -552,9 +552,9 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
     if (unverifiedRole && member.roles.cache.has(unverifiedRole.id)) {
       try {
         await member.roles.remove(unverifiedRole);
-        console.log(`Removed Unverified role from ${user.tag}`);
+        console.log(`removed Unverified role from ${user.tag}`);
       } catch (error) {
-        console.error('Error removing Unverified role:', error);
+        console.error('error removing Unverified role:', error);
       }
     }
     
@@ -565,7 +565,7 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
       
       // Отправляем сообщение об успешной верификации
       try {
-        await user.send('✅ Вы успешно прошли верификацию! Теперь у вас есть доступ к серверу.');
+        await user.send('ты был верефицирован');
       } catch (dmError) {
         console.log('Cannot send DM to user:', dmError);
       }
@@ -983,3 +983,4 @@ client.on(Events.MessageCreate, async (message) => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
+
