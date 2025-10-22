@@ -497,7 +497,7 @@ client.on(Events.GuildMemberAdd, async (member) => {
     const welcomeChannel = member.guild.channels.cache.get(WELCOME_CHANNEL_ID);
     
     if (welcomeChannel) {
-      await welcomeChannel.send(`Приветствую ${member.user}! Добро пожаловать на сервер! Пожалуйста, пройдите верификацию в канале <#${VERIFICATION_CHANNEL_ID}>`);
+      await welcomeChannel.send(`привет ${member.user}! добро пожаловать на сервер! пожалуйста, пройдите верификацию в канале <#${VERIFICATION_CHANNEL_ID}>`);
     } else {
       console.error('Welcome channel not found:', WELCOME_CHANNEL_ID);
     }
@@ -657,7 +657,7 @@ client.on(Events.GuildMemberRemove, async (member) => {
       };
       
       await welcomeChannel.send({ 
-        content: `@everyone, пользователь **${member.user.tag}** покинул сервер! 👋`,
+        content: `пользователь **${member.user.tag}** покинул сервер! 👋`,
         embeds: [leaveEmbed] 
       });
       
@@ -1045,4 +1045,5 @@ client.on(Events.MessageCreate, async (message) => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
+
 
