@@ -610,7 +610,7 @@ client.on(Events.MessageReactionRemove, async (reaction, user) => {
       
       // Уведомляем пользователя
       try {
-        await user.send('❌ Верификация отменена. Вы снова получили роль Unverified.');
+        await user.send('верефикация отмененна');
       } catch (dmError) {
         console.log('Cannot send DM to user about verification cancellation');
       }
@@ -1045,3 +1045,4 @@ client.on(Events.MessageCreate, async (message) => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
+
