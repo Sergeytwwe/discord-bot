@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, Events, PermissionFlagsBits } = require('discord.js');
+const { Client, GatewayIntentBits, Events, PermissionFlagsBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
 
 console.log('starting bot with supabase database...');
@@ -41,6 +41,51 @@ const WELCOME_CHANNEL_ID = '1424339559159824487';
 
 const officialReplyRu = 'я могу отвечать только в официальных каналах сервера.';
 const officialReplyEn = 'i can only respond in the official server channels.';
+
+// Регистрация слеш-команд
+const commands = [
+  new SlashCommandBuilder()
+    .setName('generatekey')
+    .setDescription('сгенерировать ключ активации')
+    .addStringOption(option =>
+      option.setName('длительность')
+        .setDescription('длительность ключа (например: 1d, 2h, 30m)')
+        .setRequired(false)
+    ),
+  new SlashCommandBuilder()
+    .setName('setupverify')
+    .setDescription('настроить систему верификации'),
+  new SlashCommandBuilder()
+    .setName('ping')
+    .setDescription('проверить работу бота'),
+  new SlashCommandBuilder()
+    .setName('level')
+    .setDescription('показать ваш уровень'),
+  new SlashCommandBuilder()
+    .setName('warns')
+    .setDescription('показать ваши предупреждения'),
+  new SlashCommandBuilder()
+    .setName('help')
+    .setDescription('показать список команд')
+].map(command => command.toJSON());
+
+// Функция регистрации команд
+async function registerCommands() {
+  try {
+    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+    
+    console.log('начало регистрации слеш-команд...');
+    
+    const data = await rest.put(
+      Routes.applicationCommands(client.user.id),
+      { body: commands }
+    );
+    
+    console.log(`успешно зарегистрировано ${data.length} слеш-команд`);
+  } catch (error) {
+    console.error('ошибка регистрации команд:', error);
+  }
+}
 
 // Функция генерации уникального ключа
 function generateUniqueKey() {
@@ -127,7 +172,7 @@ async function getLevel(userId) {
     if (error || !data) return 0;
     return data.level;
   } catch (error) {
-    console.error('Error getting level:', error);
+    console.error('error getting level:', error);
     return 0;
   }
 }
@@ -142,9 +187,9 @@ async function setLevel(userId, level) {
         updated_at: new Date().toISOString()
       });
     
-    if (error) console.error('Error setting level:', error);
+    if (error) console.error('error setting level:', error);
   } catch (error) {
-    console.error('Error setting level:', error);
+    console.error('error setting level:', error);
   }
 }
 
@@ -157,9 +202,9 @@ async function addWarn(userId, reason) {
         reason: reason 
       });
     
-    if (error) console.error('Error adding warn:', error);
+    if (error) console.error('error adding warn:', error);
   } catch (error) {
-    console.error('Error adding warn:', error);
+    console.error('error adding warn:', error);
   }
 }
 
@@ -172,12 +217,12 @@ async function getUserWarns(userId) {
       .gte('created_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString());
     
     if (error) {
-      console.error('Error getting warns:', error);
+      console.error('error getting warns:', error);
       return [];
     }
     return data || [];
   } catch (error) {
-    console.error('Error getting warns:', error);
+    console.error('error getting warns:', error);
     return [];
   }
 }
@@ -189,9 +234,9 @@ async function clearUserWarns(userId) {
       .delete()
       .eq('user_id', userId);
     
-    if (error) console.error('Error clearing warns:', error);
+    if (error) console.error('error clearing warns:', error);
   } catch (error) {
-    console.error('Error clearing warns:', error);
+    console.error('error clearing warns:', error);
   }
 }
 
@@ -211,7 +256,7 @@ async function generateAndSaveKey(userId, durationStr = null) {
     if (durationStr) {
       durationInfo = parseDuration(durationStr);
       if (!durationInfo) {
-        throw new Error('Неверный формат длительности. Используйте: 1d, 2h, 30m');
+        throw new Error('неверный формат длительности. используйте: 1d, 2h, 30m');
       }
       expiresAt = new Date(Date.now() + durationInfo.milliseconds).toISOString();
       expired = false;
@@ -232,13 +277,13 @@ async function generateAndSaveKey(userId, durationStr = null) {
       } else if (!checkError && existingKey) {
         attempts++;
       } else {
-        console.error('Error checking key uniqueness:', checkError);
+        console.error('error checking key uniqueness:', checkError);
         attempts++;
       }
     }
 
     if (!isUnique) {
-      throw new Error('Could not generate unique key after multiple attempts');
+      throw new Error('не удалось сгенерировать уникальный ключ после нескольких попыток');
     }
 
     // Сохраняем ключ в базу
@@ -255,13 +300,13 @@ async function generateAndSaveKey(userId, durationStr = null) {
       });
 
     if (insertError) {
-      console.error('Error saving key:', insertError);
-      throw new Error('Failed to save key to database');
+      console.error('error saving key:', insertError);
+      throw new Error('ошибка сохранения ключа в базу данных');
     }
 
     return { key, durationInfo };
   } catch (error) {
-    console.error('Error in generateAndSaveKey:', error);
+    console.error('error in generateAndSaveKey:', error);
     throw error;
   }
 }
@@ -276,17 +321,17 @@ async function getGeneratedKeys(userId) {
       .limit(10);
 
     if (error) {
-      console.error('Error getting keys:', error);
+      console.error('error getting keys:', error);
       return [];
     }
     return data || [];
   } catch (error) {
-    console.error('Error getting keys:', error);
+    console.error('error getting keys:', error);
     return [];
   }
 }
 
-// НОВАЯ ФУНКЦИЯ: Логирование модерационных действий
+// Функция: Логирование модерационных действий
 async function logModAction(action, moderatorId, targetUserId, reason = null, duration = null, successful = true) {
   try {
     const { error } = await supabase
@@ -302,14 +347,14 @@ async function logModAction(action, moderatorId, targetUserId, reason = null, du
       });
 
     if (error) {
-      console.error('Error logging mod action:', error);
+      console.error('error logging mod action:', error);
     }
   } catch (error) {
-    console.error('Error in logModAction:', error);
+    console.error('error in logModAction:', error);
   }
 }
 
-// НОВАЯ ФУНКЦИЯ: Автоочистка старых варнов
+// Функция: Автоочистка старых варнов
 async function cleanupOldWarns() {
   try {
     const { error } = await supabase
@@ -318,12 +363,12 @@ async function cleanupOldWarns() {
       .lt('created_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString());
 
     if (error) {
-      console.error('Error cleaning up old warns:', error);
+      console.error('error cleaning up old warns:', error);
     } else {
-      console.log('Old warns cleanup completed');
+      console.log('old warns cleanup completed');
     }
   } catch (error) {
-    console.error('Error in cleanupOldWarns:', error);
+    console.error('error in cleanupOldWarns:', error);
   }
 }
 
@@ -366,34 +411,34 @@ function formatHumanDuration(value, unit) {
   return `${v}`;
 }
 
-// НОВАЯ ФУНКЦИЯ: Создание сообщения для верификации
+// Функция: Создание сообщения для верификации
 async function createVerificationMessage(channel) {
   try {
     const embed = {
-      title: '🔐 Верификация',
-      description: 'Для доступа к серверу нажмите на реакцию ✅ ниже',
+      title: 'верификация',
+      description: 'для доступа к серверу нажмите на реакцию ниже',
       color: 0x00ff00,
       timestamp: new Date().toISOString(),
       footer: {
-        text: 'Система верификации'
+        text: 'система верификации'
       }
     };
 
     const message = await channel.send({ 
-      content: '**Верификация**',
+      content: '**верификация**',
       embeds: [embed] 
     });
     
     await message.react('✅');
-    console.log('Verification message created with ID:', message.id);
+    console.log('verification message created with id:', message.id);
     return message.id;
   } catch (error) {
-    console.error('Error creating verification message:', error);
+    console.error('error creating verification message:', error);
     throw error;
   }
 }
 
-// НОВАЯ ФУНКЦИЯ: Найти или создать роль Verified
+// Функция: Найти или создать роль Verified
 async function findOrCreateVerifiedRole(guild) {
   try {
     // Ищем существующую роль
@@ -407,7 +452,7 @@ async function findOrCreateVerifiedRole(guild) {
       verifiedRole = await guild.roles.create({
         name: 'Verified',
         color: 'GREEN',
-        reason: 'Роль для верифицированных пользователей',
+        reason: 'роль для верифицированных пользователей',
         permissions: []
       });
       
@@ -419,17 +464,17 @@ async function findOrCreateVerifiedRole(guild) {
         await verifiedRole.setPosition(botRole.position - 1);
       }
       
-      console.log('Created Verified role:', verifiedRole.id);
+      console.log('created verified role:', verifiedRole.id);
     }
 
     return verifiedRole;
   } catch (error) {
-    console.error('Error finding/creating Verified role:', error);
+    console.error('error finding/creating verified role:', error);
     throw error;
   }
 }
 
-// НОВАЯ ФУНКЦИЯ: Найти или создать роль Unverified
+// Функция: Найти или создать роль Unverified
 async function findOrCreateUnverifiedRole(guild) {
   try {
     // Ищем существующую роль
@@ -443,23 +488,180 @@ async function findOrCreateUnverifiedRole(guild) {
       unverifiedRole = await guild.roles.create({
         name: 'Unverified',
         color: 'GREY',
-        reason: 'Роль для новых пользователей',
+        reason: 'роль для новых пользователей',
         permissions: []
       });
-      console.log('Created Unverified role:', unverifiedRole.id);
+      console.log('created unverified role:', unverifiedRole.id);
     }
 
     return unverifiedRole;
   } catch (error) {
-    console.error('Error finding/creating Unverified role:', error);
+    console.error('error finding/creating unverified role:', error);
     throw error;
   }
 }
+
+// Обработчик слеш-команд
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+
+  const { commandName, options, user, channel, guild } = interaction;
+  const level = await getLevel(user.id);
+
+  function canUse(levelRequired) {
+    return level >= levelRequired || user.id === guild.ownerId;
+  }
+
+  try {
+    // Команда generatekey
+    if (commandName === 'generatekey') {
+      if (!canUse(3)) {
+        return await interaction.reply({ 
+          content: 'у вас нет прав для генерации ключей', 
+          ephemeral: true 
+        });
+      }
+
+      const durationStr = options.getString('длительность');
+      
+      try {
+        await interaction.deferReply({ ephemeral: true });
+        
+        const { key, durationInfo } = await generateAndSaveKey(user.id, durationStr);
+        
+        let keyMessage = `сгенерирован ключ: ${key}`;
+        if (durationInfo) {
+          keyMessage += `\nсрок действия: ${durationInfo.human}`;
+          const expiresDate = new Date(Date.now() + durationInfo.milliseconds);
+          keyMessage += `\nистекает: ${expiresDate.toLocaleString('ru-RU')}`;
+          keyMessage += `\nстатус: активен`;
+        } else {
+          keyMessage += `\nсрок действия: бессрочный`;
+          keyMessage += `\nстатус: активен`;
+        }
+        
+        await interaction.editReply({ content: keyMessage });
+        
+      } catch (error) {
+        console.error('key generation error:', error);
+        await interaction.editReply({ 
+          content: `ошибка при генерации ключа: ${error.message}` 
+        });
+      }
+      return;
+    }
+
+    // Команда setupverify
+    if (commandName === 'setupverify') {
+      if (!canUse(3)) {
+        return await interaction.reply({ 
+          content: 'у вас нет прав для настройки верификации', 
+          ephemeral: true 
+        });
+      }
+
+      try {
+        await interaction.deferReply({ ephemeral: true });
+        
+        const channel = guild.channels.cache.get(VERIFICATION_CHANNEL_ID);
+        if (!channel) {
+          return await interaction.editReply('канал для верификации не найден');
+        }
+
+        await createVerificationMessage(channel);
+        await interaction.editReply('сообщение для верификации создано!');
+        
+      } catch (error) {
+        console.error('error setting up verification:', error);
+        await interaction.editReply('ошибка при создании сообщения верификации');
+      }
+      return;
+    }
+
+    // Команда ping
+    if (commandName === 'ping') {
+      return await interaction.reply({ 
+        content: 'понг! бот работает', 
+        ephemeral: true 
+      });
+    }
+
+    // Команда level
+    if (commandName === 'level') {
+      return await interaction.reply({ 
+        content: `ваш текущий уровень ${level}`, 
+        ephemeral: true 
+      });
+    }
+
+    // Команда warns
+    if (commandName === 'warns') {
+      const warns = await getUserWarns(user.id);
+
+      if (warns.length === 0) {
+        return await interaction.reply({ 
+          content: 'у вас нет активных предупреждений', 
+          ephemeral: true 
+        });
+      }
+
+      const list = warns.map((w, i) => `${i + 1}. ${w.reason} (${new Date(w.created_at).toLocaleDateString()})`).join('\n');
+      return await interaction.reply({ 
+        content: `ваши активные предупреждения (за последние 7 дней):\n${list}`, 
+        ephemeral: true 
+      });
+    }
+
+    // Команда help
+    if (commandName === 'help') {
+      const text = `
+команды:
+/пинг — проверить работу
+/привет — приветствие
+/мут @user [длительность] [причина]
+/снятьмут @user
+/кик @user [причина]
+/бан @user [причина]
+/разбан id
+/банлист
+/варн @user [причина]
+/варны — показать свои предупреждения
+/повысить @user
+/понизить @user
+/уровень — показать уровень
+/generatekey [время] — сгенерировать ключ (только для админов)
+    примеры времени: 1d, 2h, 30m
+/setupverify — создать сообщение для верификации (только для админов)
+      `;
+      return await interaction.reply({ 
+        content: text, 
+        ephemeral: true 
+      });
+    }
+
+  } catch (error) {
+    console.error('error handling slash command:', error);
+    try {
+      await interaction.reply({ 
+        content: 'произошла ошибка при выполнении команды', 
+        ephemeral: true 
+      });
+    } catch (e) {
+      // Если ответ уже отправлен
+      await interaction.editReply({ 
+        content: 'произошла ошибка при выполнении команды' 
+      });
+    }
+  }
+});
 
 client.once(Events.ClientReady, async (c) => {
   console.log(`bot started: ${c.user.tag}`);
   console.log('using supabase for data storage');
   console.log('commands: !ping, !ban, !kick, !mute, !unmute, !unban, !warn, !warns, !help, !повысить, !понизить, /generatekey, /setupverify');
+
+  // Регистрируем слеш-команды после запуска бота
+  await registerCommands();
 
   const guilds = client.guilds.cache;
   for (const [guildId, guild] of guilds) {
@@ -470,28 +672,28 @@ client.once(Events.ClientReady, async (c) => {
     try {
       await findOrCreateVerifiedRole(guild);
       await findOrCreateUnverifiedRole(guild);
-      console.log(`Roles created/verified for guild: ${guild.name}`);
+      console.log(`roles created/verified for guild: ${guild.name}`);
     } catch (error) {
-      console.error(`Error setting up roles for guild ${guild.name}:`, error);
+      console.error(`error setting up roles for guild ${guild.name}:`, error);
     }
   }
 
   // Запускаем автоочистку каждые 24 часа
   setInterval(cleanupOldWarns, 24 * 60 * 60 * 1000);
-  console.log('Auto-cleanup for warns scheduled every 24 hours');
+  console.log('auto-cleanup for warns scheduled every 24 hours');
 });
 
 // Обработчик входа нового пользователя
 client.on(Events.GuildMemberAdd, async (member) => {
   try {
-    console.log(`New member joined: ${member.user.tag}`);
+    console.log(`new member joined: ${member.user.tag}`);
     
     // Находим или создаем роль Unverified
     const unverifiedRole = await findOrCreateUnverifiedRole(member.guild);
     
     // Выдаем роль Unverified
     await member.roles.add(unverifiedRole);
-    console.log(`Assigned Unverified role to ${member.user.tag}`);
+    console.log(`assigned unverified role to ${member.user.tag}`);
     
     // Отправляем приветственное сообщение в правильный канал
     const welcomeChannel = member.guild.channels.cache.get(WELCOME_CHANNEL_ID);
@@ -499,11 +701,11 @@ client.on(Events.GuildMemberAdd, async (member) => {
     if (welcomeChannel) {
       await welcomeChannel.send(`привет ${member.user}! добро пожаловать на сервер! пожалуйста, пройдите верификацию в канале <#${VERIFICATION_CHANNEL_ID}>`);
     } else {
-      console.error('Welcome channel not found:', WELCOME_CHANNEL_ID);
+      console.error('welcome channel not found:', WELCOME_CHANNEL_ID);
     }
     
   } catch (error) {
-    console.error('Error handling new member:', error);
+    console.error('error handling new member:', error);
   }
 });
 
@@ -521,17 +723,17 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
     
     const member = reaction.message.guild.members.cache.get(user.id);
     if (!member) {
-      console.log('Member not found for user:', user.id);
+      console.log('member not found for user:', user.id);
       return;
     }
     
-    console.log(`Processing verification for user: ${user.tag}`);
+    console.log(`processing verification for user: ${user.tag}`);
     
     // Находим роли
     const verifiedRole = await findOrCreateVerifiedRole(reaction.message.guild);
     const unverifiedRole = await findOrCreateUnverifiedRole(reaction.message.guild);
     
-    console.log('Found roles:', {
+    console.log('found roles:', {
       verified: verifiedRole?.name,
       unverified: unverifiedRole?.name
     });
@@ -539,7 +741,7 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
     // Проверяем иерархию ролей
     const botMember = await reaction.message.guild.members.fetch(client.user.id);
     if (verifiedRole.position >= botMember.roles.highest.position) {
-      console.error('Bot cannot assign Verified role - hierarchy issue');
+      console.error('bot cannot assign verified role - hierarchy issue');
       try {
         await user.send('ошибка, свяжитесь с администрацией');
       } catch (dmError) {
@@ -552,35 +754,35 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
     if (unverifiedRole && member.roles.cache.has(unverifiedRole.id)) {
       try {
         await member.roles.remove(unverifiedRole);
-        console.log(`removed Unverified role from ${user.tag}`);
+        console.log(`removed unverified role from ${user.tag}`);
       } catch (error) {
-        console.error('error removing Unverified role:', error);
+        console.error('error removing unverified role:', error);
       }
     }
     
     // Добавляем роль Verified
     try {
       await member.roles.add(verifiedRole);
-      console.log(`Added Verified role to ${user.tag}`);
+      console.log(`added verified role to ${user.tag}`);
       
       // Отправляем сообщение об успешной верификации
       try {
         await user.send('ты был верефицирован');
       } catch (dmError) {
-        console.log('Cannot send DM to user:', dmError);
+        console.log('cannot send dm to user:', dmError);
       }
       
     } catch (error) {
-      console.error('Error adding Verified role:', error);
+      console.error('error adding verified role:', error);
       try {
-        await user.send('❌ Ошибка при выдаче роли Verified. Пожалуйста, сообщите администраторам.');
+        await user.send('ошибка при выдаче роли verified. пожалуйста, сообщите администраторам.');
       } catch (dmError) {
-        console.log('Cannot send DM to user about role error');
+        console.log('cannot send dm to user about role error');
       }
     }
     
   } catch (error) {
-    console.error('Error handling verification reaction:', error);
+    console.error('error handling verification reaction:', error);
   }
 });
 
@@ -600,31 +802,31 @@ client.on(Events.MessageReactionRemove, async (reaction, user) => {
     // Если убрали реакцию, убираем Verified и возвращаем Unverified
     if (member.roles.cache.has(verifiedRole.id)) {
       await member.roles.remove(verifiedRole);
-      console.log(`Removed Verified role from ${user.tag} (reaction removed)`);
+      console.log(`removed verified role from ${user.tag} (reaction removed)`);
     }
     
     // Добавляем роль Unverified обратно
     if (unverifiedRole && !member.roles.cache.has(unverifiedRole.id)) {
       await member.roles.add(unverifiedRole);
-      console.log(`Added Unverified role back to ${user.tag} (reaction removed)`);
+      console.log(`added unverified role back to ${user.tag} (reaction removed)`);
       
       // Уведомляем пользователя
       try {
         await user.send('верефикация отмененна');
       } catch (dmError) {
-        console.log('Cannot send DM to user about verification cancellation');
+        console.log('cannot send dm to user about verification cancellation');
       }
     }
     
   } catch (error) {
-    console.error('Error handling reaction remove:', error);
+    console.error('error handling reaction remove:', error);
   }
 });
 
 // Обработчик выхода пользователя с сервера
 client.on(Events.GuildMemberRemove, async (member) => {
   try {
-    console.log(`User left: ${member.user.tag} (${member.user.id})`);
+    console.log(`user left: ${member.user.tag} (${member.user.id})`);
     
     // Отправляем сообщение о выходе пользователя
     const welcomeChannel = member.guild.channels.cache.get(WELCOME_CHANNEL_ID);
@@ -633,44 +835,45 @@ client.on(Events.GuildMemberRemove, async (member) => {
       // Создаем красивое сообщение о выходе
       const leaveEmbed = {
         color: 0xff0000,
-        title: '🚪 Пользователь покинул сервер',
+        title: 'пользователь покинул сервер',
         description: `**${member.user.tag}** (${member.user.id})`,
         thumbnail: {
           url: member.user.displayAvatarURL({ dynamic: true })
         },
         fields: [
           {
-            name: 'Присоединился',
+            name: 'присоединился',
             value: `<t:${Math.floor(member.joinedTimestamp / 1000)}:R>`,
             inline: true
           },
           {
-            name: 'Аккаунт создан',
+            name: 'аккаунт создан',
             value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>`,
             inline: true
           }
         ],
         timestamp: new Date().toISOString(),
         footer: {
-          text: `ID: ${member.user.id}`
+          text: `id: ${member.user.id}`
         }
       };
       
       await welcomeChannel.send({ 
-        content: `пользователь **${member.user.tag}** покинул сервер! 👋`,
+        content: `пользователь **${member.user.tag}** покинул сервер!`,
         embeds: [leaveEmbed] 
       });
       
-      console.log(`Leave message sent for ${member.user.tag}`);
+      console.log(`leave message sent for ${member.user.tag}`);
     } else {
-      console.error('Welcome channel not found for leave message:', WELCOME_CHANNEL_ID);
+      console.error('welcome channel not found for leave message:', WELCOME_CHANNEL_ID);
     }
     
   } catch (error) {
-    console.error('Error handling member leave:', error);
+    console.error('error handling member leave:', error);
   }
 });
 
+// Обработчик обычных текстовых команд (сохраняем для обратной совместимости)
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot) return;
 
@@ -741,76 +944,7 @@ client.on(Events.MessageCreate, async (message) => {
     return; // Игнорируем модерационные команды в других каналах
   }
 
-  // Команда настройки верификации
-  if (cmd === '/setupverify') {
-    if (!canUse(3)) {
-      try {
-        await message.author.send('у вас нет прав для настройки верификации');
-        return;
-      } catch {
-        return;
-      }
-    }
-
-    try {
-      const channel = message.guild.channels.cache.get(VERIFICATION_CHANNEL_ID);
-      if (!channel) {
-        return message.reply('канал для верификации не найден');
-      }
-
-      await createVerificationMessage(channel);
-      await message.reply('сообщение для верификации создано!');
-      
-    } catch (error) {
-      console.error('Error setting up verification:', error);
-      await message.reply('ошибка при создании сообщения верификации');
-    }
-    return;
-  }
-
-  // Команда генерации ключа
-  if (cmd === '/generatekey') {
-    if (!canUse(3)) {
-      try {
-        await message.author.send('у вас нет прав для генерации ключей');
-        return;
-      } catch {
-        return;
-      }
-    }
-
-    try {
-      const durationStr = args[0] || null;
-      const { key, durationInfo } = await generateAndSaveKey(message.author.id, durationStr);
-      
-      let keyMessage = `сгенерирован ключ: ${key}`;
-      if (durationInfo) {
-        keyMessage += `\nсрок действия: ${durationInfo.human}`;
-        const expiresDate = new Date(Date.now() + durationInfo.milliseconds);
-        keyMessage += `\nистекает: ${expiresDate.toLocaleString('ru-RU')}`;
-        keyMessage += `\nстатус: активен`;
-      } else {
-        keyMessage += `\nсрок действия: бессрочный`;
-        keyMessage += `\nстатус: активен`;
-      }
-      
-      try {
-        await message.author.send(keyMessage);
-        await message.reply('ключ сгенерирован и отправлен в лс');
-      } catch (dmError) {
-        console.error('Cannot send DM:', dmError);
-        await message.reply('не удалось отправить ключ в лс. проверьте настройки приватности');
-      }
-    } catch (error) {
-      console.error('Key generation error:', error);
-      try {
-        await message.author.send(`ошибка при генерации ключа: ${error.message}`);
-      } catch {
-      }
-    }
-    return;
-  }
-
+  // Обычные текстовые команды (для обратной совместимости)
   if (cmd === '!ping' || cmd === '!пинг') {
     return message.reply('понг! бот работает');
   }
@@ -1045,5 +1179,3 @@ client.on(Events.MessageCreate, async (message) => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
-
-
